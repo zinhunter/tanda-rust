@@ -1,5 +1,4 @@
-use chrono::prelude::*;
-use chrono::Duration;
+use crate::date_handling;
 use near_sdk::borsh::{self, BorshDeserialize, BorshSerialize};
 use near_sdk::serde::{Deserialize, Serialize};
 use near_sdk::{env, AccountId};
@@ -31,8 +30,11 @@ impl Tanda {
             nombre_tanda: String::from(&nombre),
             num_integrantes,
             monto,
-            fecha_inicio: env::block_timestamp().to_string(),
-            fecha_final: env::block_timestamp().to_string(),
+            fecha_inicio: date_handling::calcular_inicio(),
+            fecha_final: date_handling::agregar_dias(
+                &date_handling::calcular_inicio(),
+                (num_integrantes * periodo - 1) as i64,
+            ),
             activa: false,
             periodo,
             estado: String::from("Pendiente"),
@@ -83,10 +85,10 @@ pub struct Periodo {
 }
 
 impl Periodo {
-    pub fn new(&self, inicio: String, periodo: i64) -> Self {
+    pub fn new(inicio: String, fin: String) -> Self {
         Self {
-            inicio: String::from(&inicio),
-            fin: self.calcular_fin(&inicio, periodo),
+            inicio,
+            fin,
             usuario_en_turno: String::from(""),
             pagos_completos: false,
             tanda_pagada: false,
@@ -94,25 +96,47 @@ impl Periodo {
             integrantes_pagados: HashSet::new(),
         }
     }
-    // pub fn prueba_fecha(&self, dias: i64) {
-    //     let a = &env::block_timestamp().to_string()[..10];
-    //     let n = a.parse::<i64>().unwrap();
-    //     let b = NaiveDateTime::from_timestamp(n, 0);
+}
 
-    //     let c: DateTime<Utc> = DateTime::from_utc(b, Utc);
+impl Default for Periodo {
+    fn default() -> Self {
+        Periodo {
+            inicio: String::from(""),
+            fin: String::from(""),
+            usuario_en_turno: String::from(""),
+            pagos_completos: false,
+            tanda_pagada: false,
+            cantidad_recaudada: 0,
+            integrantes_pagados: HashSet::new(),
+        }
+    }
+}
 
-    //     let e = c.checked_add_signed(Duration::days(dias));
-    //     env::log(c.to_string().as_bytes());
-    //     env::log(e.unwrap().to_string().as_bytes());
-    // }
+// * USUARIO
+#[derive(BorshSerialize, BorshDeserialize, Serialize, Deserialize)]
+#[serde(crate = "near_sdk::serde")]
+pub struct Usuario {
+    pub cuenta: AccountId,
+    pub tandas_creadas: Vec<String>,
+    pub tandas_inscritas: Vec<String>,
+}
 
-    fn calcular_fin(&self, inicio: &str, periodo: i64) -> String {
-        let parse_inicio = NaiveDateTime::parse_from_str(&inicio, "%Y-%m-%d %H:%M:%S").unwrap();
-        let inicio_utc: DateTime<Utc> = DateTime::from_utc(parse_inicio, Utc);
+impl Usuario {
+    pub fn new(cuenta: AccountId) -> Self {
+        Self {
+            cuenta,
+            tandas_creadas: Vec::<String>::new(),
+            tandas_inscritas: Vec::<String>::new(),
+        }
+    }
+}
 
-        inicio_utc
-            .checked_add_signed(Duration::days(periodo))
-            .unwrap()
-            .to_string()
+impl Default for Usuario {
+    fn default() -> Self {
+        Usuario {
+            cuenta: String::from(""),
+            tandas_creadas: Vec::<String>::new(),
+            tandas_inscritas: Vec::<String>::new(),
+        }
     }
 }
