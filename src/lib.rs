@@ -1,4 +1,3 @@
-//use crate::log_generator;
 use crate::types::{Periodo, Tanda, Usuario};
 use near_sdk::borsh::{self, BorshDeserialize, BorshSerialize};
 use near_sdk::collections::UnorderedMap;
@@ -12,6 +11,10 @@ mod log_generator;
 mod types;
 
 const MAX_PAGE_SIZE: u64 = 10;
+
+fn one_near() -> u128 {
+    u128::from_str_radix("1000000000000000000000000", 10).unwrap()
+}
 
 setup_alloc!();
 
@@ -35,6 +38,7 @@ impl Default for TandaDapp {
 
 #[near_bindgen]
 impl TandaDapp {
+    #[payable]
     pub fn crear_tanda(
         &mut self,
         nombre_tanda: String,
@@ -42,14 +46,49 @@ impl TandaDapp {
         monto: u32,
         periodo: u32,
     ) {
-        let tanda = Tanda::new(nombre_tanda, num_integrantes, monto, periodo);
-        env::log(format!("'{}'", &tanda.id).as_bytes());
+        // * Validación de errores
+        assert!(
+            env::attached_deposit() >= one_near(),
+            "Se requiere un pago de al menos 1 NEAR para la creación de la Tanda."
+        );
+
+        assert!(
+            nombre_tanda != "",
+            "El nombre de la Tanda no puede estar vacío."
+        );
+        assert!(
+            num_integrantes >= 2,
+            "La Tanda necesita al menos 2 integrantes."
+        );
+
+        assert!(monto > 0, "El monto a ahorrar tiene que ser mayor a 0.");
+        assert!(periodo > 0, "El periodo no puede ser menor a 1.");
+
+        // * Creación de Tanda
+
+        let tanda = Tanda::new(String::from(&nombre_tanda), num_integrantes, monto, periodo);
         self.tandas.insert(&tanda.id, &tanda);
 
-        //TODO: Añadir registrar_usuario y generar_periodos
+        // * Registro de usuario y tanda, generación de periodos de tanda.
+        self.registrar_usuario(env::predecessor_account_id(), String::from(&tanda.id), true);
+
+        self.generar_periodos(String::from(&tanda.id));
+
+        // * Registro de log
+        let msg = format!(
+            "{} creó la tanda {}, con id: {}, {} personas ahorrarán {} NEAR cada {} días.",
+            env::predecessor_account_id(),
+            &nombre_tanda,
+            &tanda.id,
+            num_integrantes,
+            monto,
+            periodo
+        );
+        env::log(msg.as_bytes());
     }
 
     pub fn consultar_tanda(&self, clave: String) -> Option<Tanda> {
+        assert!(clave != "", "El campo de clave no debe estar vacío.");
         self.tandas.get(&clave)
     }
 
@@ -129,22 +168,136 @@ impl TandaDapp {
         self.tandas.values_as_vector().to_vec()
     }
 
-    pub fn agregar_integrante(&mut self) {
+    pub fn agregar_integrante(&mut self, clave: String) {
+        assert!(clave != "", "El campo de clave no debe estar vacío.");
         let id_cuenta = env::predecessor_account_id();
+
+        let valido = self.validar_integrante(String::from(&clave), String::from(&id_cuenta));
+
+        assert!(
+            !valido,
+            "El usuario {} ya es integrante de esta tanda.",
+            &id_cuenta
+        );
+
+        let tanda = self.tandas.get(&clave);
+        assert!(tanda.is_some(), "La tanda no existe.");
+        tanda.unwrap().agregar_integrante(String::from(&id_cuenta));
     }
 
-    // pub fn consultar_integrantes(&self) -> HashSet<AccountId> {
+    pub fn consultar_integrantes(&self, clave: String) -> HashSet<AccountId> {
+        assert!(clave != "", "El campo de clave no debe estar vacío.");
 
-    // }
-    // // ! MÉTODO INTERNO
-    // fn validar_integrante(&self, id_tanda: String, id_cuenta: AccountId){
-    //     match self.tandas.get(&id_tanda) {
-    //         Some(tanda) => {
-    //             tanda.integrantes.
-    //         },
-    //         None => {}
-    //     }
-    // }
+        let tanda = self.tandas.get(&clave);
+        assert!(tanda.is_some(), "La tanda no existe.");
+
+        tanda.unwrap().integrantes
+    }
+
+    // ! MÉTODO INTERNO
+    fn validar_integrante(&self, id_tanda: String, id_cuenta: AccountId) -> bool {
+        match self.tandas.get(&id_tanda) {
+            Some(tanda) => tanda.integrantes.contains(&id_cuenta),
+            None => false,
+        }
+    }
+
+    #[payable]
+    pub fn agregar_integrante_pago(&mut self, clave: String) {
+        // * Validaciones
+        let tanda_check = self.tandas.get(&clave);
+        assert!(tanda_check.is_some(), "La tanda no existe.");
+        let tanda = tanda_check.unwrap();
+        let monto = env::attached_deposit();
+
+        assert!(
+            monto == one_near().checked_mul(tanda.monto as u128).unwrap(),
+            "Sólo se pueden realizar pagos por la cantidad establecida en la Tanda ({} NEAR).",
+            tanda.monto
+        );
+
+        let id_cuenta = env::predecessor_account_id();
+        let valido = self.validar_integrante(String::from(&tanda.id), String::from(&id_cuenta));
+
+        assert!(
+            valido,
+            "El usuario {} no es integrante de esta tanda.",
+            &id_cuenta
+        );
+
+        assert!(
+            self.periodos_tanda.get(&clave).is_some(),
+            "Los periodos para esta tanda no están inicializados."
+        );
+
+        let mut periodos = self.periodos_tanda.get(&clave).unwrap();
+        let indice = self.validar_periodo(String::from(&clave), Some(String::from(&id_cuenta)));
+
+        assert!(
+            indice >= 0,
+            "El usuario {} no puede realizar pagos. 
+            Ya se realizaron todos los pagos correspondientes a esta Tanda",
+            &id_cuenta
+        );
+
+        // * Registro en periodos
+        periodos[indice as usize]
+            .integrantes_pagados
+            .insert(String::from(&id_cuenta));
+
+        let monto_a_sumar = monto.checked_div(one_near()).unwrap().to_string();
+        periodos[indice as usize].cantidad_recaudada += monto_a_sumar.parse::<u32>().unwrap();
+
+        self.periodos_tanda.insert(&clave, &periodos);
+
+        self.validar_pago_tanda(String::from(&clave), indice);
+
+        // * Registro en historial de pagos
+        // TODO: Implementar registro de historial de pagos
+    }
+
+    pub fn validar_pago_tanda(&mut self, clave: String, indice: i32) -> bool {
+        assert!(self.tandas.get(&clave).is_some(), "La tanda no existe.");
+
+        assert!(
+            self.periodos_tanda.get(&clave).is_some(),
+            "Los periodos para esta tanda no están inicializados."
+        );
+
+        let tanda = self.tandas.get(&clave).unwrap();
+        let mut periodos = self.periodos_tanda.get(&clave).unwrap();
+        let i = indice as usize;
+        let cantidad_a_pagar = tanda.monto * tanda.num_integrantes;
+
+        if periodos[i].cantidad_recaudada == cantidad_a_pagar
+            && periodos[i].integrantes_pagados.len() as u32 == tanda.num_integrantes
+        {
+            periodos[i].pagos_completos = true;
+            self.periodos_tanda.insert(&clave, &periodos);
+
+            true
+        } else {
+            false
+        }
+    }
+
+    pub fn validar_periodo(&self, clave: String, id_cuenta: Option<String>) -> i32 {
+        assert!(
+            self.periodos_tanda.get(&clave).is_some(),
+            "Los periodos para esta tanda no están inicializados."
+        );
+
+        let periodos = self.periodos_tanda.get(&clave).unwrap();
+        let cuenta = id_cuenta.unwrap_or(env::predecessor_account_id());
+
+        for n in 0..periodos.len() {
+            if !periodos[n].integrantes_pagados.contains(&cuenta) {
+                return n as i32;
+            }
+        }
+
+        -1
+    }
 
     pub fn generar_periodos(&mut self, clave: String) {
         match self.tandas.get(&clave) {

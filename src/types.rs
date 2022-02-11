@@ -45,11 +45,19 @@ impl Tanda {
     pub fn agregar_integrante(&mut self, integrante: AccountId) {
         if u32::try_from(self.integrantes.len()).unwrap() < self.num_integrantes {
             self.integrantes.insert(integrante);
+            env::log(
+                format!(
+                    "Integrante nuevo {} agregado exitosamente.",
+                    env::predecessor_account_id()
+                )
+                .as_bytes(),
+            );
+        } else {
+            env::log(
+                format!("La Tanda se encuentra llena, ya no existen lugares disponibles.")
+                    .as_bytes(),
+            );
         }
-    }
-
-    pub fn consultar_integrantes(&self) -> &HashSet<AccountId> {
-        &self.integrantes
     }
 }
 
@@ -140,3 +148,8 @@ impl Default for Usuario {
         }
     }
 }
+
+// * PAGO
+#[derive(BorshSerialize, BorshDeserialize, Serialize, Deserialize)]
+#[serde(crate = "near_sdk::serde")]
+pub struct Pago {}
