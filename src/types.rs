@@ -150,6 +150,24 @@ impl Default for Usuario {
 }
 
 // * PAGO
-#[derive(BorshSerialize, BorshDeserialize, Serialize, Deserialize)]
+#[derive(BorshSerialize, BorshDeserialize, Serialize, Deserialize, Clone)]
 #[serde(crate = "near_sdk::serde")]
-pub struct Pago {}
+pub struct Pago {
+    monto: u32,
+    fecha_pago: String,
+}
+
+impl Pago {
+    pub fn new(monto: u32, fecha_pago: String) -> Self {
+        Self { monto, fecha_pago }
+    }
+}
+
+impl Default for Pago {
+    fn default() -> Self {
+        Pago {
+            monto: 0,
+            fecha_pago: String::from(""),
+        }
+    }
+}

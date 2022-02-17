@@ -1,9 +1,9 @@
-use crate::types::{Periodo, Tanda, Usuario};
+use crate::types::{Pago, Periodo, Tanda, Usuario};
 use near_sdk::borsh::{self, BorshDeserialize, BorshSerialize};
 use near_sdk::collections::UnorderedMap;
 use near_sdk::{env, near_bindgen, setup_alloc, AccountId};
 use std::cmp;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::vec::Vec;
 
 mod date_handling;
@@ -24,6 +24,7 @@ pub struct TandaDapp {
     tandas: UnorderedMap<String, Tanda>,
     periodos_tanda: UnorderedMap<String, Vec<Periodo>>,
     usuarios: UnorderedMap<AccountId, Usuario>,
+    pagos: UnorderedMap<String, HashMap<String, Vec<Pago>>>,
 }
 
 impl Default for TandaDapp {
@@ -32,6 +33,7 @@ impl Default for TandaDapp {
             tandas: UnorderedMap::new(b"t".to_vec()),
             periodos_tanda: UnorderedMap::new(b"p".to_vec()),
             usuarios: UnorderedMap::new(b"u".to_vec()),
+            pagos: UnorderedMap::new(b"h".to_vec()),
         }
     }
 }
@@ -203,7 +205,7 @@ impl TandaDapp {
     }
 
     #[payable]
-    pub fn agregar_integrante_pago(&mut self, clave: String) {
+    pub fn agregar_integrante_pago(&mut self, clave: String) -> bool {
         // * Validaciones
         let tanda_check = self.tandas.get(&clave);
         assert!(tanda_check.is_some(), "La tanda no existe.");
@@ -253,7 +255,50 @@ impl TandaDapp {
         self.validar_pago_tanda(String::from(&clave), indice);
 
         // * Registro en historial de pagos
-        // TODO: Implementar registro de historial de pagos
+        let new_payment = Pago::new(tanda.monto, date_handling::calcular_inicio());
+
+        match self.pagos.get(&clave) {
+            Some(mut historial) => {
+                if historial.get_mut(&id_cuenta).is_some() {
+                    let hist_user = historial.get_mut(&id_cuenta).unwrap();
+                    let mut hist = self.pagos.get(&clave).unwrap();
+
+                    hist_user.push(new_payment);
+                    hist.insert(String::from(&id_cuenta), hist_user.to_vec());
+
+                    self.pagos.insert(&clave, &hist);
+                    env::log(format!("Nuevo pago añadido exitosamente.").as_bytes());
+
+                    true
+                } else {
+                    let mut hist = self.pagos.get(&clave).unwrap();
+                    let mut new_vec = Vec::<Pago>::new();
+
+                    new_vec.push(new_payment);
+                    hist.insert(String::from(&id_cuenta), new_vec);
+                    self.pagos.insert(&clave, &hist);
+
+                    env::log(format!("El primer pago fue registrado correctamente.").as_bytes());
+
+                    true
+                }
+            }
+            None => {
+                env::log(format!("El historial de pagos está vacío.").as_bytes());
+
+                let mut payment_map = HashMap::<String, Vec<Pago>>::new();
+                let mut payment_vec = Vec::<Pago>::new();
+
+                payment_vec.push(new_payment);
+                payment_map.insert(id_cuenta, payment_vec);
+
+                self.pagos.insert(&clave, &payment_map);
+
+                env::log(format!("Se inicializó exitosamente el registro de pagos.").as_bytes());
+
+                true
+            }
+        }
     }
 
     pub fn validar_pago_tanda(&mut self, clave: String, indice: i32) -> bool {
