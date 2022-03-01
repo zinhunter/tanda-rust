@@ -1,7 +1,7 @@
 use crate::types::{Pago, Periodo, Tanda, Usuario};
 use near_sdk::borsh::{self, BorshDeserialize, BorshSerialize};
 use near_sdk::collections::UnorderedMap;
-use near_sdk::{env, near_bindgen, setup_alloc, AccountId};
+use near_sdk::{env, near_bindgen, setup_alloc, AccountId, Promise};
 use std::cmp;
 use std::collections::{HashMap, HashSet};
 use std::vec::Vec;
@@ -301,6 +301,181 @@ impl TandaDapp {
         }
     }
 
+    pub fn consultar_integrante_pagos(
+        &self,
+        clave: String,
+        id_cuenta: Option<String>,
+    ) -> Vec<Pago> {
+        let cuenta = id_cuenta.unwrap_or(env::predecessor_account_id());
+        let valido = self.validar_integrante(String::from(&clave), String::from(&cuenta));
+
+        assert!(valido, "El usuario no es integrante de esta Tanda.");
+        assert!(self.tandas.get(&clave).is_some(), "La Tanda no existe.");
+
+        let historial: HashMap<String, Vec<Pago>>;
+
+        match self.pagos.get(&clave) {
+            Some(_historial) => {
+                historial = self.pagos.get(&clave).unwrap();
+                let hist_user = historial.get(&clave);
+
+                if hist_user.is_some() {
+                    hist_user.unwrap().to_vec()
+                } else {
+                    Vec::<Pago>::new()
+                }
+            }
+            None => Vec::<Pago>::new(),
+        }
+    }
+
+    pub fn consultar_pagos(&self) -> Vec<(String, HashMap<String, Vec<Pago>>)> {
+        self.pagos.to_vec()
+    }
+
+    pub fn activar_tanda(&mut self, clave: String) -> bool {
+        assert!(clave != "", "El campo de clave no debe estar vacío");
+
+        match self.tandas.get(&clave) {
+            Some(mut tanda) => {
+                assert!(
+                    tanda.creador == env::predecessor_account_id(),
+                    "No cuentas con permisos para modificar esta Tanda"
+                );
+                assert!(!tanda.activa, "La Tanda ya se encuentra activa.");
+                assert!(
+                    tanda.num_integrantes == tanda.integrantes.len() as u32,
+                    "Hacen falta {} integrantes por unirse",
+                    tanda.num_integrantes - tanda.integrantes.len() as u32
+                );
+
+                let fecha_hoy = date_handling::calcular_inicio();
+
+                if tanda.fecha_inicio != fecha_hoy {
+                    tanda.fecha_inicio = fecha_hoy;
+                    tanda.fecha_final = date_handling::agregar_dias(
+                        &date_handling::calcular_inicio(),
+                        (tanda.num_integrantes * tanda.periodo - 1) as i64,
+                    );
+
+                    self.regenerar_periodos(clave.to_string());
+                }
+
+                tanda.activa = true;
+                tanda.estado = "Activa".to_string();
+                self.tandas.insert(&clave, &tanda);
+                true
+            }
+            None => false,
+        }
+    }
+
+    pub fn regenerar_periodos(&mut self, clave: String) {
+        assert!(self.tandas.get(&clave).is_some(), "La Tanda no existe");
+        assert!(
+            self.periodos_tanda.get(&clave).is_some(),
+            "Los periodos no están inicializados"
+        );
+
+        let tanda = self.tandas.get(&clave).unwrap();
+        let mut periodos = self.periodos_tanda.get(&clave).unwrap();
+
+        assert!(
+            tanda.creador == env::predecessor_account_id(),
+            "No cuentas con permisos para modificar esta Tanda"
+        );
+
+        let mut inicio_ciclo = tanda.fecha_inicio;
+        let mut final_ciclo: String;
+
+        for n in 0..periodos.len() {
+            periodos[n].inicio = String::from(&inicio_ciclo);
+            final_ciclo = date_handling::agregar_dias(&inicio_ciclo, (tanda.periodo - 1) as i64);
+            periodos[n].fin = final_ciclo.to_string();
+
+            inicio_ciclo = final_ciclo;
+        }
+
+        self.periodos_tanda.insert(&clave, &periodos);
+    }
+
+    pub fn editar_tanda(
+        &mut self,
+        clave: String,
+        nombre: Option<String>,
+        num_integrantes: Option<u32>,
+        monto: Option<u32>,
+        periodo: Option<u32>,
+        fecha_inicio: Option<String>,
+    ) -> Tanda {
+        assert!(self.tandas.get(&clave).is_some(), "La tanda no existe.");
+        let mut tanda = self.tandas.get(&clave).unwrap();
+
+        assert!(
+            tanda.creador == env::predecessor_account_id(),
+            "No cuentas con autorización para modificar esta Tanda."
+        );
+
+        let nombre_unwrap = nombre.unwrap_or("".to_string());
+        if nombre_unwrap != String::new() {
+            tanda.nombre_tanda = nombre_unwrap;
+        }
+
+        if !tanda.activa && tanda.integrantes.len() == 0 {
+            let num_integrantes_unwrap = num_integrantes.unwrap_or(0);
+            let monto_unwrap = monto.unwrap_or(0);
+            let periodo_unwrap = periodo.unwrap_or(0);
+            let fecha_inicio_unwrap = fecha_inicio.unwrap_or(String::new());
+
+            if num_integrantes_unwrap != 0 {
+                tanda.num_integrantes = num_integrantes_unwrap;
+            }
+
+            if monto_unwrap != 0 {
+                tanda.monto = monto_unwrap;
+            }
+
+            if periodo_unwrap != 0 {
+                tanda.periodo = periodo_unwrap;
+            }
+
+            if fecha_inicio_unwrap != String::new() {
+                tanda.fecha_inicio = fecha_inicio_unwrap;
+            }
+
+            assert!(tanda.num_integrantes > 2, "Número de integrantes no válido");
+            assert!(tanda.monto > 0, "Monto a ahorrar no válido");
+            assert!(
+                tanda.periodo == 7 || tanda.periodo == 15 || tanda.periodo == 30,
+                "Periodo para ahorrar no válido"
+            );
+
+            self.tandas.insert(&clave, &tanda);
+            tanda
+        } else {
+            Tanda::default()
+        }
+    }
+
+    pub fn cancelar_tanda(&mut self, clave: String) -> Tanda {
+        assert!(self.tandas.get(&clave).is_some(), "La tanda no existe");
+        let mut tanda = self.tandas.get(&clave).unwrap();
+
+        assert!(
+            tanda.creador == env::predecessor_account_id(),
+            "No cuentas con autorización para modificar esta Tanda."
+        );
+        assert!(
+            self.pagos.get(&clave).is_some(),
+            "Esta Tanda ya se encuentra en progreso, no se puede cancelar."
+        );
+
+        tanda.activa = false;
+        tanda.estado = "Cancelada".to_string();
+        self.tandas.insert(&clave, &tanda);
+        tanda
+    }
+
     pub fn validar_pago_tanda(&mut self, clave: String, indice: i32) -> bool {
         assert!(self.tandas.get(&clave).is_some(), "La tanda no existe.");
 
@@ -384,5 +559,59 @@ impl TandaDapp {
 
     pub fn consultar_periodos(&self, clave: String) -> Option<Vec<Periodo>> {
         self.periodos_tanda.get(&clave)
+    }
+
+    pub fn obtener_periodo_a_pagar(&self, clave: String) -> i32 {
+        assert!(
+            clave != String::new(),
+            "El campo clave no debe estar vacío."
+        );
+        assert!(self.tandas.get(&clave).is_some(), "La tanda no existe");
+        assert!(
+            self.periodos_tanda.get(&clave).is_some(),
+            "Los periodos para esta tanda no están inicializados."
+        );
+
+        let periodos = self.periodos_tanda.get(&clave).unwrap();
+
+        for n in 0..periodos.len() {
+            if periodos[n].tanda_pagada == false {
+                return n as i32;
+            }
+        }
+        -1
+    }
+
+    pub fn pagar_tanda(&self, clave: String, indice: i32) -> bool {
+        assert!(
+            clave != String::new(),
+            "El campo clave no debe estar vacío."
+        );
+        assert!(self.tandas.get(&clave).is_some(), "La tanda no existe");
+        assert!(
+            self.periodos_tanda.get(&clave).is_some(),
+            "Los periodos para esta tanda no están inicializados."
+        );
+
+        let periodos = self.periodos_tanda.get(&clave).unwrap();
+        let n = indice as usize;
+
+        assert!(
+            periodos[n].pagos_completos == true,
+            "Este periodo aún no puede ser pagado."
+        );
+
+        env::log(format!("Validando que este periodo pueda ser pagado...").as_bytes());
+        assert!(
+            periodos[n].usuario_en_turno != String::new(),
+            "No hay usuario en turno en este periodo."
+        );
+
+        let monto = one_near()
+            .checked_mul(periodos[n].cantidad_recaudada as u128)
+            .unwrap_or(0);
+        Promise::new(env::predecessor_account_id()).transfer(monto);
+
+        true
     }
 }
