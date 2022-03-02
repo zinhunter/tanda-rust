@@ -142,7 +142,7 @@ impl TandaDapp {
     }
 
     // ! MÉTODO INTERNO
-    fn buscar_tandas(&self, lista_tandas: Vec<String>) -> Vec<Tanda> {
+    pub fn buscar_tandas(&self, lista_tandas: Vec<String>) -> Vec<Tanda> {
         let mut result = Vec::<Tanda>::new();
 
         for n in 0..lista_tandas.len() {
@@ -184,7 +184,12 @@ impl TandaDapp {
 
         let tanda = self.tandas.get(&clave);
         assert!(tanda.is_some(), "La tanda no existe.");
-        tanda.unwrap().agregar_integrante(String::from(&id_cuenta));
+        let mut tanda_unwrap = tanda.unwrap();
+        tanda_unwrap.agregar_integrante(String::from(&id_cuenta));
+
+        self.tandas.insert(&clave, &tanda_unwrap);
+
+        self.registrar_usuario(id_cuenta.to_string(), String::from(&tanda_unwrap.id), false);
     }
 
     pub fn consultar_integrantes(&self, clave: String) -> HashSet<AccountId> {
@@ -501,6 +506,48 @@ impl TandaDapp {
         }
     }
 
+    pub fn escoger_turno(&mut self, clave: String, num_turno: usize) {
+        assert!(self.tandas.get(&clave).is_some(), "La tanda no existe.");
+        let id_cuenta = env::predecessor_account_id();
+        let valido = self.validar_integrante(String::from(&clave), String::from(&id_cuenta));
+        assert!(
+            valido,
+            "El usuario {} no es integrante de esta tanda.",
+            &id_cuenta
+        );
+
+        assert!(
+            self.periodos_tanda.get(&clave).is_some(),
+            "Los periodos no están inicializados"
+        );
+
+        let mut periodos = self.periodos_tanda.get(&clave).unwrap();
+
+        assert!(
+            num_turno <= periodos.len() && num_turno > 0,
+            "La tanda sólo contiene {} espacios.",
+            periodos.len()
+        );
+
+        assert!(
+            periodos[num_turno - 1].usuario_en_turno == String::new(),
+            "El turno {} ya está tomado por {}",
+            num_turno,
+            periodos[num_turno - 1].usuario_en_turno
+        );
+
+        periodos[num_turno - 1].usuario_en_turno = env::predecessor_account_id();
+
+        self.periodos_tanda.insert(&clave, &periodos);
+
+        let msg = format!(
+            "El usuario {} ha tomado exitosamente el turno {} en la Tanda.",
+            env::predecessor_account_id(),
+            num_turno
+        );
+        env::log(msg.as_bytes());
+    }
+
     pub fn validar_periodo(&self, clave: String, id_cuenta: Option<String>) -> i32 {
         assert!(
             self.periodos_tanda.get(&clave).is_some(),
@@ -582,7 +629,7 @@ impl TandaDapp {
         -1
     }
 
-    pub fn pagar_tanda(&self, clave: String, indice: i32) -> bool {
+    pub fn pagar_tanda(&mut self, clave: String, indice: i32) -> bool {
         assert!(
             clave != String::new(),
             "El campo clave no debe estar vacío."
@@ -593,7 +640,7 @@ impl TandaDapp {
             "Los periodos para esta tanda no están inicializados."
         );
 
-        let periodos = self.periodos_tanda.get(&clave).unwrap();
+        let mut periodos = self.periodos_tanda.get(&clave).unwrap();
         let n = indice as usize;
 
         assert!(
@@ -611,6 +658,12 @@ impl TandaDapp {
             .checked_mul(periodos[n].cantidad_recaudada as u128)
             .unwrap_or(0);
         Promise::new(env::predecessor_account_id()).transfer(monto);
+
+        periodos[n].tanda_pagada = true;
+        self.periodos_tanda.insert(&clave, &periodos);
+
+        let msg = format!("La Tanda fue pagada exitosamente. El usuario {} recibió {} NEAR correspondientes al periodo #{}.", periodos[n].usuario_en_turno, periodos[n].cantidad_recaudada, {indice + 1});
+        env::log(msg.as_bytes());
 
         true
     }
